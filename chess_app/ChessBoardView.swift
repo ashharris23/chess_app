@@ -12,6 +12,8 @@ extension Color {
 
 struct ChessBoardView: View {
     let game: ChessGame
+    /// Shows the board from black's side, with black's pieces at the bottom.
+    var flipped = false
     @State private var selected: Position?
 
     var body: some View {
@@ -25,7 +27,10 @@ struct ChessBoardView: View {
                 ForEach(0..<8, id: \.self) { row in
                     HStack(spacing: 0) {
                         ForEach(0..<8, id: \.self) { column in
-                            square(at: Position(row: row, column: column), size: squareSize, moves: moves)
+                            let position = flipped
+                                ? Position(row: 7 - row, column: 7 - column)
+                                : Position(row: row, column: column)
+                            square(at: position, size: squareSize, moves: moves)
                         }
                     }
                 }

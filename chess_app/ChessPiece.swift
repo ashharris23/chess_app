@@ -23,6 +23,19 @@ enum PieceColor {
 
 enum PieceKind {
     case king, queen, rook, bishop, knight, pawn
+
+    /// Reads a FEN/UCI piece letter, in either case.
+    init?(fenLetter: Character) {
+        switch fenLetter.lowercased() {
+        case "k": self = .king
+        case "q": self = .queen
+        case "r": self = .rook
+        case "b": self = .bishop
+        case "n": self = .knight
+        case "p": self = .pawn
+        default: return nil
+        }
+    }
 }
 
 struct ChessPiece: Hashable {
@@ -31,6 +44,19 @@ struct ChessPiece: Hashable {
 
     /// Unicode chess glyph. The solid (black) glyphs are used for both colours
     /// so that they can be tinted; white pieces are drawn in white.
+    /// The FEN letter: uppercase for white, lowercase for black.
+    var fenLetter: String {
+        let letter = switch kind {
+        case .king: "k"
+        case .queen: "q"
+        case .rook: "r"
+        case .bishop: "b"
+        case .knight: "n"
+        case .pawn: "p"
+        }
+        return color == .white ? letter.uppercased() : letter
+    }
+
     var symbol: String {
         switch kind {
         case .king: "♚"
@@ -51,8 +77,26 @@ struct Position: Hashable {
         (0..<8).contains(row) && (0..<8).contains(column)
     }
 
+    /// The square name, such as "e4".
+    var algebraic: String {
+        let file = Character(UnicodeScalar(UInt8(97 + column)))
+        return "\(file)\(8 - row)"
+    }
+
     func offset(_ rowDelta: Int, _ columnDelta: Int) -> Position {
         Position(row: row + rowDelta, column: column + columnDelta)
+    }
+}
+
+// In an extension so that Position keeps its memberwise initializer.
+extension Position {
+    /// Reads a square name such as "e4".
+    init?(algebraic: String) {
+        let characters = Array(algebraic)
+        guard characters.count == 2,
+              let file = characters[0].asciiValue, (97...104).contains(file),
+              let rank = characters[1].wholeNumberValue, (1...8).contains(rank) else { return nil }
+        self.init(row: 8 - rank, column: Int(file) - 97)
     }
 }
 

@@ -41,6 +41,8 @@ final class ChessGame {
     private var touchedSquares: Set<Position> = []
     /// Half-moves (one player's turn each) since the last pawn move or capture.
     private(set) var halfmoveClock = 0
+    /// Starts at 1 and goes up after each black move, as in FEN.
+    private(set) var fullmoveNumber = 1
     /// How many times each position has occurred, for threefold repetition.
     private var positionCounts: [PositionKey: Int] = [:]
     private var history: [Snapshot] = []
@@ -54,6 +56,7 @@ final class ChessGame {
         let pendingPromotion: Position?
         let touchedSquares: Set<Position>
         let halfmoveClock: Int
+        let fullmoveNumber: Int
         let positionCounts: [PositionKey: Int]
     }
 
@@ -90,6 +93,11 @@ final class ChessGame {
         !history.isEmpty
     }
 
+    /// The number of half-moves played so far (that can be undone).
+    var plyCount: Int {
+        history.count
+    }
+
     /// The king of the side to move, if it is in check.
     var checkedKingPosition: Position? {
         Self.isKingInCheck(turn, on: board) ? board.kingPosition(of: turn) : nil
@@ -108,7 +116,7 @@ final class ChessGame {
         history.append(Snapshot(
             board: board, turn: turn, status: status, enPassantTarget: enPassantTarget,
             pendingPromotion: pendingPromotion, touchedSquares: touchedSquares,
-            halfmoveClock: halfmoveClock, positionCounts: positionCounts
+            halfmoveClock: halfmoveClock, fullmoveNumber: fullmoveNumber, positionCounts: positionCounts
         ))
 
         let isCapture = board[move.to] != nil || move.isEnPassant
@@ -148,12 +156,71 @@ final class ChessGame {
         pendingPromotion = snapshot.pendingPromotion
         touchedSquares = snapshot.touchedSquares
         halfmoveClock = snapshot.halfmoveClock
+        fullmoveNumber = snapshot.fullmoveNumber
         positionCounts = snapshot.positionCounts
+    }
+
+    // MARK: - UCI (for talking to chess engines)
+
+    /// The current position in Forsyth–Edwards Notation.
+    var fen: String {
+        let placement = (0..<8).map { row in
+            var rank = ""
+            var emptyCount = 0
+            for column in 0..<8 {
+                if let piece = board[Position(row: row, column: column)] {
+                    if emptyCount > 0 { rank += String(emptyCount) }
+                    emptyCount = 0
+                    rank += piece.fenLetter
+                } else {
+                    emptyCount += 1
+                }
+            }
+            if emptyCount > 0 { rank += String(emptyCount) }
+            return rank
+        }.joined(separator: "/")
+
+        let castling = [
+            canCastle(.white, rookColumn: 7) ? "K" : "",
+            canCastle(.white, rookColumn: 0) ? "Q" : "",
+            canCastle(.black, rookColumn: 7) ? "k" : "",
+            canCastle(.black, rookColumn: 0) ? "q" : "",
+        ].joined()
+
+        return [
+            placement,
+            turn == .white ? "w" : "b",
+            castling.isEmpty ? "-" : castling,
+            enPassantTarget?.algebraic ?? "-",
+            String(halfmoveClock),
+            String(fullmoveNumber),
+        ].joined(separator: " ")
+    }
+
+    /// Plays a move in UCI long algebraic notation, such as "e2e4" or "e7e8q".
+    /// Returns false (and changes nothing) if the move isn't legal.
+    @discardableResult
+    func make(uciMove: String) -> Bool {
+        let characters = Array(uciMove)
+        guard characters.count == 4 || characters.count == 5,
+              let from = Position(algebraic: String(characters[0...1])),
+              let to = Position(algebraic: String(characters[2...3])),
+              let move = legalMoves(from: from).first(where: { $0.to == to }) else { return false }
+
+        let promotion = characters.count == 5 ? PieceKind(fenLetter: characters[4]) : nil
+        make(move)
+        if pendingPromotion != nil {
+            promote(to: promotion ?? .queen)
+        }
+        return true
     }
 
     // MARK: - Turn handling
 
     private func endTurn() {
+        if turn == .black {
+            fullmoveNumber += 1
+        }
         turn = turn.opposite
         positionCounts[positionKey(), default: 0] += 1
         evaluateStatus()
@@ -199,16 +266,18 @@ final class ChessGame {
         return Set(others.map { ($0.0.row + $0.0.column) % 2 }).count == 1
     }
 
-    private func positionKey() -> PositionKey {
-        func canCastle(_ color: PieceColor, rookColumn: Int) -> Bool {
-            let row = color == .white ? 7 : 0
-            let king = Position(row: row, column: 4)
-            let rook = Position(row: row, column: rookColumn)
-            return board[king] == ChessPiece(kind: .king, color: color)
-                && board[rook] == ChessPiece(kind: .rook, color: color)
-                && !touchedSquares.contains(king) && !touchedSquares.contains(rook)
-        }
+    /// Whether `color` still has the right to castle with the rook in `rookColumn`
+    /// (ignoring whether castling is possible right now).
+    private func canCastle(_ color: PieceColor, rookColumn: Int) -> Bool {
+        let row = color == .white ? 7 : 0
+        let king = Position(row: row, column: 4)
+        let rook = Position(row: row, column: rookColumn)
+        return board[king] == ChessPiece(kind: .king, color: color)
+            && board[rook] == ChessPiece(kind: .rook, color: color)
+            && !touchedSquares.contains(king) && !touchedSquares.contains(rook)
+    }
 
+    private func positionKey() -> PositionKey {
         // An en passant square only matters if a capture onto it is actually possible.
         let enPassantPossible = enPassantTarget != nil && ChessBoard.allPositions.contains { position in
             guard let piece = board[position], piece.color == turn, piece.kind == .pawn else { return false }
