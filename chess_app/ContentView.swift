@@ -23,8 +23,15 @@ struct ContentView: View {
                 promotionPicker
             }
 
-            Button("New Game") {
-                game = ChessGame()
+            HStack(spacing: 16) {
+                Button("Undo") {
+                    game.undo()
+                }
+                .disabled(!game.canUndo)
+
+                Button("New Game") {
+                    game = ChessGame()
+                }
             }
             .buttonStyle(.borderedProminent)
         }
@@ -41,6 +48,12 @@ struct ContentView: View {
             "Checkmate — \(winner.name) wins"
         case .stalemate:
             "Stalemate — it's a draw"
+        case .draw(.fiftyMoveRule):
+            "Draw — 50 moves without a capture or pawn move"
+        case .draw(.threefoldRepetition):
+            "Draw — the same position occurred three times"
+        case .draw(.insufficientMaterial):
+            "Draw — not enough pieces left to checkmate"
         }
     }
 

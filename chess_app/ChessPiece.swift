@@ -25,7 +25,7 @@ enum PieceKind {
     case king, queen, rook, bishop, knight, pawn
 }
 
-struct ChessPiece: Equatable {
+struct ChessPiece: Hashable {
     let kind: PieceKind
     let color: PieceColor
 
@@ -57,7 +57,7 @@ struct Position: Hashable {
 }
 
 /// An 8x8 board. Row 0 is rank 8 (top), column 0 is file a, so white starts at the bottom.
-struct ChessBoard {
+struct ChessBoard: Hashable {
     var squares: [[ChessPiece?]]
 
     static let allPositions: [Position] = (0..<8).flatMap { row in

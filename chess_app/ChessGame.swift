@@ -12,11 +12,18 @@ struct Move: Equatable {
     var isCastling = false
 }
 
+enum DrawReason: Equatable {
+    case fiftyMoveRule
+    case threefoldRepetition
+    case insufficientMaterial
+}
+
 enum GameStatus: Equatable {
     case inProgress
     case check
     case checkmate(winner: PieceColor)
     case stalemate
+    case draw(DrawReason)
 }
 
 /// A local two-player game: holds the position and enforces the rules of chess.
@@ -32,12 +39,55 @@ final class ChessGame {
     /// Every square a move has started from or landed on. A king or rook whose starting
     /// square is in here has moved (or been captured), so it can no longer castle.
     private var touchedSquares: Set<Position> = []
+    /// Half-moves (one player's turn each) since the last pawn move or capture.
+    private(set) var halfmoveClock = 0
+    /// How many times each position has occurred, for threefold repetition.
+    private var positionCounts: [PositionKey: Int] = [:]
+    private var history: [Snapshot] = []
+
+    /// Everything a move can change, so that it can be undone.
+    private struct Snapshot {
+        let board: ChessBoard
+        let turn: PieceColor
+        let status: GameStatus
+        let enPassantTarget: Position?
+        let pendingPromotion: Position?
+        let touchedSquares: Set<Position>
+        let halfmoveClock: Int
+        let positionCounts: [PositionKey: Int]
+    }
+
+    /// Two positions are the same for repetition if the pieces, the side to move,
+    /// the castling rights and the en passant possibilities all match.
+    private struct PositionKey: Hashable {
+        let board: ChessBoard
+        let turn: PieceColor
+        let castlingRights: [Bool]
+        let enPassantTarget: Position?
+    }
+
+    init() {
+        positionCounts[positionKey()] = 1
+    }
+
+    /// Starts from a custom position (used for tests and puzzles). Castling is allowed
+    /// wherever the king and rook are on their home squares.
+    init(board: ChessBoard, turn: PieceColor = .white) {
+        self.board = board
+        self.turn = turn
+        positionCounts[positionKey()] = 1
+        evaluateStatus()
+    }
 
     var isGameOver: Bool {
         switch status {
-        case .checkmate, .stalemate: true
+        case .checkmate, .stalemate, .draw: true
         case .inProgress, .check: false
         }
+    }
+
+    var canUndo: Bool {
+        !history.isEmpty
     }
 
     /// The king of the side to move, if it is in check.
@@ -54,6 +104,15 @@ final class ChessGame {
 
     func make(_ move: Move) {
         guard legalMoves(from: move.from).contains(move), let piece = board[move.from] else { return }
+
+        history.append(Snapshot(
+            board: board, turn: turn, status: status, enPassantTarget: enPassantTarget,
+            pendingPromotion: pendingPromotion, touchedSquares: touchedSquares,
+            halfmoveClock: halfmoveClock, positionCounts: positionCounts
+        ))
+
+        let isCapture = board[move.to] != nil || move.isEnPassant
+        halfmoveClock = (piece.kind == .pawn || isCapture) ? 0 : halfmoveClock + 1
 
         board = Self.applying(move, to: board)
         touchedSquares.insert(move.from)
@@ -79,11 +138,28 @@ final class ChessGame {
         endTurn()
     }
 
+    /// Takes back the last move, including a promotion that is still waiting to be chosen.
+    func undo() {
+        guard let snapshot = history.popLast() else { return }
+        board = snapshot.board
+        turn = snapshot.turn
+        status = snapshot.status
+        enPassantTarget = snapshot.enPassantTarget
+        pendingPromotion = snapshot.pendingPromotion
+        touchedSquares = snapshot.touchedSquares
+        halfmoveClock = snapshot.halfmoveClock
+        positionCounts = snapshot.positionCounts
+    }
+
     // MARK: - Turn handling
 
     private func endTurn() {
         turn = turn.opposite
+        positionCounts[positionKey(), default: 0] += 1
+        evaluateStatus()
+    }
 
+    private func evaluateStatus() {
         let inCheck = Self.isKingInCheck(turn, on: board)
         let canMove = ChessBoard.allPositions.contains { position in
             guard let piece = board[position], piece.color == turn else { return false }
@@ -96,6 +172,58 @@ final class ChessGame {
         case (true, true): status = .check
         case (false, true): status = .inProgress
         }
+
+        // Checkmate and stalemate take priority over the automatic draws.
+        if status == .inProgress || status == .check, let reason = drawReason() {
+            status = .draw(reason)
+        }
+    }
+
+    private func drawReason() -> DrawReason? {
+        if hasInsufficientMaterial() { return .insufficientMaterial }
+        if positionCounts[positionKey(), default: 0] >= 3 { return .threefoldRepetition }
+        if halfmoveClock >= 100 { return .fiftyMoveRule }
+        return nil
+    }
+
+    /// True when neither side could ever deliver checkmate: bare kings, a lone knight or bishop,
+    /// or only bishops that all stand on the same colour of square.
+    private func hasInsufficientMaterial() -> Bool {
+        let others = ChessBoard.allPositions.compactMap { position in
+            board[position].flatMap { $0.kind == .king ? nil : (position, $0.kind) }
+        }
+        if others.isEmpty { return true }
+        if others.count == 1 { return others[0].1 == .bishop || others[0].1 == .knight }
+
+        guard others.allSatisfy({ $0.1 == .bishop }) else { return false }
+        return Set(others.map { ($0.0.row + $0.0.column) % 2 }).count == 1
+    }
+
+    private func positionKey() -> PositionKey {
+        func canCastle(_ color: PieceColor, rookColumn: Int) -> Bool {
+            let row = color == .white ? 7 : 0
+            let king = Position(row: row, column: 4)
+            let rook = Position(row: row, column: rookColumn)
+            return board[king] == ChessPiece(kind: .king, color: color)
+                && board[rook] == ChessPiece(kind: .rook, color: color)
+                && !touchedSquares.contains(king) && !touchedSquares.contains(rook)
+        }
+
+        // An en passant square only matters if a capture onto it is actually possible.
+        let enPassantPossible = enPassantTarget != nil && ChessBoard.allPositions.contains { position in
+            guard let piece = board[position], piece.color == turn, piece.kind == .pawn else { return false }
+            return generateLegalMoves(from: position, piece: piece).contains { $0.isEnPassant }
+        }
+
+        return PositionKey(
+            board: board,
+            turn: turn,
+            castlingRights: [
+                canCastle(.white, rookColumn: 7), canCastle(.white, rookColumn: 0),
+                canCastle(.black, rookColumn: 7), canCastle(.black, rookColumn: 0),
+            ],
+            enPassantTarget: enPassantPossible ? enPassantTarget : nil
+        )
     }
 
     // MARK: - Move generation

@@ -34,6 +34,10 @@ struct ChessBoardView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .aspectRatio(1, contentMode: .fit)
+        // Undo changes the board without a tap, so drop any stale selection.
+        .onChange(of: game.board) {
+            selected = nil
+        }
     }
 
     private func square(at position: Position, size: CGFloat, moves: [Move]) -> some View {
